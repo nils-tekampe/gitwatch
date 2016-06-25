@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 #
-# gitwatch - watch file or directory and git commit all changes as they happen
+# macgitwatch - watch file or directory and git commit all changes as they happen
 #
-# Copyright (C) 2013  Patrick Lehner
-#   with modifications and contributions by:
-#   - Matthew McGowan
-#   - Dominik D. Geyer
+# Copyright (C) 2016 Nils Tekampe
 #
 #############################################################################
 #    This program is free software: you can redistribute it and/or modify
@@ -22,24 +19,23 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #############################################################################
 #
-#   Idea and original code taken from http://stackoverflow.com/a/965274 
-#       (but heavily modified by now)
+#   Idea and original code taken from https://github.com/nevik/gitwatch
+#   adopted to the needs of OSX
 #
-#   Requires the command 'inotifywait' to be available, which is part of
-#   the inotify-tools (See https://github.com/rvoicilas/inotify-tools ),
-#   and (obviously) git.
+#   Requires the command 'fswatch' to be available, and (obviously) git.
 #   Will check the availability of both commands using the `which` command
 #   and will abort if either command (or `which`) is not found.
 #
+
 
 REMOTE=""
 BRANCH=""
 SLEEP_TIME=2
 DATE_FMT="+%Y-%m-%d %H:%M:%S"
-COMMITMSG="Scripted auto-commit on change (%d) by gitwatch.sh"
+COMMITMSG="Scripted auto-commit on change (%d) by macgitwatch.sh"
 
 shelp () { # Print a message about how to use this script
-    echo "gitwatch - watch file or directory and git commit all changes as they happen"
+    echo "macgitwatch - watch file or directory and git commit all changes as they happen"
     echo ""
     echo "Usage:"
     echo "${0##*/} [-s <secs>] [-d <fmt>] [-r <remote> [-b <branch>]]"
@@ -81,12 +77,13 @@ shelp () { # Print a message about how to use this script
     echo "It is therefore recommended to terminate the script before changin the repo's"
     echo "config and restarting it afterwards."
     echo ""
-    echo "By default, gitwatch tries to use the binaries \"git\" and \"inotifywait\","
+    echo "By default, gitwatch tries to use the binaries \"git\" and \"fswatch\","
     echo "expecting to find them in the PATH (it uses 'which' to check this and  will"
     echo "abort with an error if they cannot be found). If you want to use binaries"
     echo "that are named differently and/or located outside of your PATH, you can define"
-    echo "replacements in the environment variables GW_GIT_BIN and GW_INW_BIN for git"
-    echo "and inotifywait, respectively."
+    echo "replacements in the environment variables GW_GIT_BIN and GW_FSW_BIN for git"
+    echo "and fswatch, respectively."
+    
 }
 
 stderr () {
@@ -118,25 +115,25 @@ is_command () { # Tests for the availability of a command
 
 # if custom bin names are given for git or inotifywait, use those; otherwise fall back to "git" and "inotifywait"
 if [ -z "$GW_GIT_BIN" ]; then GIT="git"; else GIT="$GW_GIT_BIN"; fi
-if [ -z "$GW_INW_BIN" ]; then INW="inotifywait"; else INW="$GW_INW_BIN"; fi
+if [ -z "$GW_FSW_BIN" ]; then FSW="fswatch"; else FSW="$GW_FSW_BIN"; fi
 
-# Check availability of selected binaries and die if not met
-for cmd in "$GIT" "$INW"; do
+
+#Check availability of selected binaries and die if not met
+for cmd in "$GIT" "$FSW"; do
 	is_command $cmd || { stderr "Error: Required command '$cmd' not found." ; exit 1; }
 done
 unset cmd
 
 # Expand the path to the target to absolute path
-IN=$(readlink -f "$1")
+IN=$(grealpath "$1")
+
 
 if [ -d $1 ]; then # if the target is a directory
     TARGETDIR=$(sed -e "s/\/*$//" <<<"$IN") # dir to CD into before using git commands: trim trailing slash, if any
-    INCOMMAND="$INW --exclude=\"^${TARGETDIR}/.git\" -qqr -e close_write,move,delete,create $TARGETDIR" # construct inotifywait-commandline
     GIT_ADD_ARGS="." # add "." (CWD) recursively to index
     GIT_COMMIT_ARGS="-a" # add -a switch to "commit" call just to be sure
 elif [ -f $1 ]; then # if the target is a single file
     TARGETDIR=$(dirname "$IN") # dir to CD into before using git commands: extract from file name
-    INCOMMAND="$INW -qq -e close_write,move,delete $IN" # construct inotifywait-commandline
     GIT_ADD_ARGS="$IN" # add only the selected file to index
     GIT_COMMIT_ARGS="" # no need to add anything more to "commit" call
 else
@@ -168,10 +165,19 @@ else
     PUSH_CMD="" # if not remote is selected, make sure push command is empty
 fi
 
-# main program loop: wait for changes and commit them
-while true; do
-    $INCOMMAND # wait for changes
-    sleep $SLEEP_TIME # wait some more seconds to give apps time to write out all changes
+function commitAndPush () {
+
+    #Getting back variables
+    local TARGETDIR=$1
+    local GIT=$2
+    local GIT_ADD_ARGS=$3
+    local PUSH_CMD=$4
+    local DATE_FMT=$5
+    local COMMITMSG=$6
+
+    if [[ $TARGETDIR != *".git/"* ]]
+    then
+    echo $TARGETDIR
     if [ -n "$DATE_FMT" ]; then
         FORMATTED_COMMITMSG="$(sed "s/%d/$(date "$DATE_FMT")/" <<< "$COMMITMSG")" # splice the formatted date-time into the commit message
     fi
@@ -180,5 +186,10 @@ while true; do
     $GIT commit $GIT_COMMIT_ARGS -m"$FORMATTED_COMMITMSG" # construct commit message and commit
 
     if [ -n "$PUSH_CMD" ]; then $PUSH_CMD; fi
-done
+        fi
+}  
+export -f commitAndPush
+
+# Starting fswatch with xargs. Need to hand over variables to function as they don't survive the xargs call. 
+$FSW -0 $TARGETDIR | xargs -0 -n 1 -I {} bash -c 'commitAndPush "$0" "$1" "$2" "$3" "$4" "$5"' {} "$GIT" "$GIT_ADD_ARGS" "$PUSH_CMD" "$DATE_FMT" "$COMMITMSG"
 
